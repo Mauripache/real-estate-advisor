@@ -3,6 +3,7 @@ import "dotenv/config";
 import linkGenerationContext from "./prompts/linkGenerationContext";
 import puppeteer from "puppeteer";
 import decisionMakingContext from "./prompts/decisionMakingContext";
+import * as express from "express";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -113,8 +114,8 @@ async function makeDecision(originalInput: string, properties: string) {
   return response.output_text;
 }
 
-async function main() {
-  const input = "Quiero comprar un apartamento en Punta Carretas, Montevideo, con al menos 3 dormitorios y 2 baños. Debe tener terraza o balcón, ser luminoso, con aire acondicionado y calefacción. Que permita mascotas, tenga garaje y piscina en el edificio si es posible. Me interesa que esté cerca de supermercados y transporte público, y el precio no supere los 250.000 dólares.";
+/*async function main() {
+  const input = "Dame apartamentos en pocitos con renta, vendidos entre 80mil y 160mil usd, con terraza y garage, en zona tranquila y vista al mar";
   const url = await generateLink(input);
   console.log("URL generado:", url);
 
@@ -125,4 +126,33 @@ async function main() {
   console.log(decision);
 }
 
-main();
+main();*/
+
+const app = express();
+
+app.use(express.json());
+
+app.post("/api/getAdvice", async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: "Missing 'message' field in body" });
+    }
+
+    console.log("User query:", message);
+
+    const url = await generateLink(message);
+
+    const properties = await scrapeAllProperties(url);
+
+    const decision = await makeDecision(message, properties);
+
+    res.json({ query: message, decision });
+  } catch (err) {
+    console.error("Error in /api/getAdvice:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.listen(3000);
