@@ -26,14 +26,7 @@ async function scrapeAllProperties(startUrl: string, concurrency = 50) {
   const browser = await puppeteer.launch({
     headless: true,
     executablePath: puppeteer.executablePath(), 
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-zygote",
-      "--single-process",
-    ]
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
   const page = await browser.newPage();
   const properties: any[] = [];
