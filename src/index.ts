@@ -22,7 +22,7 @@ async function generateLink(description: string) {
 
 console.log("Puppeteer executable path " + puppeteer.executablePath())
 
-async function scrapeAllProperties(startUrl: string, concurrency = 50) {
+async function scrapeAllProperties(startUrl: string, concurrency = 2) {
   const browser = await puppeteer.launch({
     headless: true,
     executablePath: puppeteer.executablePath(), 
