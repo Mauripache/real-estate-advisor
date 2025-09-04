@@ -20,10 +20,12 @@ async function generateLink(description: string) {
   return response.output_text;
 }
 
+console.log("Puppeteer executable path " + puppeteer.executablePath())
 
 async function scrapeAllProperties(startUrl: string, concurrency = 50) {
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: puppeteer.executablePath(), 
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
   const page = await browser.newPage();
