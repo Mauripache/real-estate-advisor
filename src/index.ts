@@ -4,6 +4,7 @@ import linkGenerationContext from "./prompts/linkGenerationContext";
 import puppeteer from "puppeteer";
 import decisionMakingContext from "./prompts/decisionMakingContext";
 import * as express from "express";
+import * as cors from "cors";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -129,7 +130,11 @@ async function makeDecision(originalInput: string, properties: string) {
 main();*/
 
 const app = express();
-
+app.use(cors({
+  origin: "https://preview--real-estate-advisor-ui.lovable.app",
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type"],
+}));
 app.use(express.json());
 
 app.post("/api/getAdvice", async (req, res) => {
