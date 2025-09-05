@@ -39,7 +39,7 @@ async function scrapeAllProperties(startUrl: string, concurrency = 2) {
     console.log("Scraping page:", page.url());
 
     // Get all property links on this page
-    const links: string[] = await page.$$eval('a.lc-cardCover', anchors =>
+    const links: string[] = await page.$$eval('a.lc-data', anchors =>
       anchors.map(a => a.href)
     );
 
