@@ -1,10 +1,11 @@
 import OpenAI from "openai";
 import "dotenv/config";
 import linkGenerationContext from "./prompts/linkGenerationContext";
-import puppeteer from "puppeteer";
 import decisionMakingContext from "./prompts/decisionMakingContext";
 import * as express from "express";
 import * as cors from "cors";
+import axios from "axios";
+import * as cheerio from "cheerio";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -20,95 +21,68 @@ async function generateLink(description: string) {
   return response.output_text;
 }
 
-console.log("Puppeteer executable path " + puppeteer.executablePath())
+function mapProperty(raw: any) {
+  return {
+    id: raw.id,
+    title: raw.title,
+    description: raw.description?.replace(/<br\s*\/?>/gi, "\n").trim(),
+    link: "https://www.infocasas.com.uy" + raw.link,
+    price_usd: raw.price_amount_usd,
+    currency: raw.currency,
+    bedrooms: raw.bedrooms,
+    bathrooms: raw.bathrooms,
+    m2Built: raw.m2Built || raw.m2apto || raw.m2,
+    garage: raw.hasGarage || raw.garage > 0,
+    propertyType: raw.property_type?.name,
+    operationType: raw.operation_type?.name,
+    neighborhood: raw.locations?.neighbourhood?.[0]?.name || null,
+    commonExpenses: raw.commonExpenses?.amount,
+    constructionYear: raw.construction_year,
+    images: raw.images?.map((img: any) => img.src || img.link || img) || [],
+    technicalSheet: Object.fromEntries(
+      (raw.technicalSheet || []).map((item: any) => [item.label, item.value])
+    ),
+    facilities: raw.facilities || [],
+  };
+}
 
-async function scrapeAllProperties(startUrl: string, concurrency = 2) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    executablePath: puppeteer.executablePath(), 
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const page = await browser.newPage();
-  const properties: any[] = [];
+export async function scrapeAllProperties(url: string) {
+  let hasNextPage = true;
+  let properties: any[] = [];
+  let nextPage = "";
 
-  await page.goto(startUrl, { waitUntil: "domcontentloaded"});
+  while (hasNextPage) {
+    const { data: html } = await axios.get(url + nextPage);
+    const $ = cheerio.load(html);
 
-  let hasNext = true;
+    // Extract the raw JSON from the script tag
+    const rawJson = $("#__NEXT_DATA__").html();
+    if (!rawJson) {
+      throw new Error("No __NEXT_DATA__ script found");
+    }
 
-  while (hasNext) {
-    console.log("Scraping page:", page.url());
+    const nextData = JSON.parse(rawJson);
+    const pageData =
+      nextData.props.pageProps.fetchResult.searchFast.data.map(mapProperty);
 
-    // Get all property links on this page
-    const links: string[] = await page.$$eval('a.lc-data', anchors =>
-      anchors.map(a => a.href)
+    properties = [...properties, ...pageData];
+
+    console.log("Scraping page:", url + nextPage);
+    console.log(
+      `Found ${pageData.length} properties on this page. Total so far: ${properties.length}`
     );
 
-    console.log(`Found ${links.length} properties on this page.`);
-
-    // Scrape each property
-    const scrapeDetail = async (link: string) => {
-      const detailPage = await browser.newPage();
-      await detailPage.goto(link, { waitUntil: "domcontentloaded" });
-
-      // Extract both basic fields and technical sheet rows
-      const propertyDetails = await detailPage.evaluate(() => {
-        // Basic fields
-        const base = {
-          title: document.querySelector('.property-title')?.textContent?.trim() ?? null,
-          price: document.querySelector('.price')?.textContent?.trim() ?? null,
-          location: document.querySelector('.property-location-tag')?.textContent?.trim() ?? null,
-          amenities: Array.from(
-              document.querySelectorAll('.property-facilities .UY-facility-batch .ant-typography:not(.ant-typography-secondary)')
-            ).map(el => el.textContent?.trim()).filter(Boolean),
-          description: document.querySelector('.property-description')?.textContent?.trim() ?? null,
-          link: window.location.href,
-        };
-
-        // Technical sheet
-        const sheet: Record<string, string | null> = {};
-        document.querySelectorAll('.technical-sheet .ant-row').forEach(row => {
-          const label = row.querySelector('.ant-space-item span.ant-typography:not(.ant-typography-secondary)')?.textContent?.trim();
-          const value = row.querySelector('strong')?.textContent?.trim() ?? null;
-          if (label) {
-            sheet[label] = value;
-          }
-        });
-
-        return { ...base, technicalSheet: sheet };
-      });
-
-      await detailPage.close();
-      return propertyDetails;
-    }
-
-     // Parallelize with concurrency limit
-    for (let i = 0; i < links.length; i += concurrency) {
-      const chunk = links.slice(i, i + concurrency);
-      const results = await Promise.all(chunk.map(scrapeDetail));
-      properties.push(...results);
-    }
-
-    // Look for the ">" button
-    const nextButton = await page.$(
-      ".search-results-pagination li:last-child a:not([aria-label])"
-    );
-
-    if (nextButton) {
-      console.log("Clicking next page...");
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: "domcontentloaded"}),
-        nextButton.click(),
-      ]);
-    } else {
-      console.log("No more pages.");
-      hasNext = false;
-    }
+    hasNextPage =
+      nextData.props.pageProps.fetchResult.searchFast.paginatorInfo.hasMorePages;
+    nextPage =
+      "/pagina" +
+      (nextData.props.pageProps.fetchResult.searchFast.paginatorInfo
+        .currentPage + 1);
   }
 
-  await browser.close();
-  console.log("Amount of properties found: " + properties.length);
-  return JSON.stringify(properties);
+  return properties;
 }
+
 
 async function makeDecision(originalInput: string, properties: string) {
   const response = await client.responses.create({
@@ -121,14 +95,14 @@ async function makeDecision(originalInput: string, properties: string) {
 }
 
 /*async function main() {
-  const input = "Dame apartamentos en pocitos con renta, vendidos entre 80mil y 160mil usd, con terraza y garage, en zona tranquila y vista al mar";
+  const input = "Dame apartamentos en reducto con renta de menos de 100000 dolares";
   const url = await generateLink(input);
   console.log("URL generado:", url);
 
   const properties = await scrapeAllProperties(url);
-  //console.log("Propiedades encontradas:", properties);
+  console.log("Propiedades encontradas:", properties.length);
 
-  const decision = await makeDecision(input, properties);
+  const decision = await makeDecision(input, JSON.stringify(properties));
   console.log(decision);
 }
 
@@ -156,7 +130,7 @@ app.post("/api/getAdvice", async (req, res) => {
 
     const properties = await scrapeAllProperties(url);
 
-    const decision = await makeDecision(message, properties);
+    const decision = await makeDecision(message, JSON.stringify(properties));
 
     res.json({ query: message, decision });
   } catch (err) {
