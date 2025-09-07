@@ -47,59 +47,91 @@ function mapProperty(raw: any) {
   };
 }
 
-export async function scrapeAllProperties(url: string, originalInput: string) {
-  let hasNextPage = true;
-  let properties: any[] = [];
-  let nextPage = "";
+async function intermediateDecisioning(properties: any[], originalInput: string) {
+  function chunk<T>(arr: T[], size: number): T[][] {
+    return Array.from({ length: Math.ceil(arr.length / size) }, (_, i) =>
+      arr.slice(i * size, i * size + size)
+    );
+  }
 
-  while (hasNextPage) {
-    const { data: html } = await axios.get(url + nextPage);
-    const $ = cheerio.load(html);
+  let currentBatch = properties;
 
-    // Extract the raw JSON from the script tag
-    const rawJson = $("#__NEXT_DATA__").html();
-    if (!rawJson) {
-      throw new Error("No __NEXT_DATA__ script found");
-    }
+  // reducimos hasta tener 50 o menos
+  while (currentBatch.length > 50) {
+    const chunks = chunk(currentBatch, 50);
 
-    const nextData = JSON.parse(rawJson);
-    const pageData =
-      nextData.props.pageProps.fetchResult.searchFast.data.map(mapProperty);
-
-    // Only happens if the first page has no results, thus no data
-    if (pageData.length === 0) {
-      return properties;
-    }
-
-    const response = await client.responses.create({
-      model: "gpt-4o-mini",
-      instructions: intermediateDecisionContext,
-      input: originalInput + "\n\n" + JSON.stringify(pageData)
-    });
-
-    const intermediateProperties = JSON.parse(response.output_text).map((propId: string) => {
-      return pageData.find((p: any) => p.id === propId);
-    });
-
-    properties = [...properties, ...intermediateProperties];
-
-    console.log("Scraping page:", url + nextPage);
-    console.log(
-      `Found ${pageData.length} properties on this page. Total so far: ${properties.length}`
+    const results = await Promise.all(
+      chunks.map(async (group) => {
+        const res = await client.responses.create({
+          model: "gpt-4o-mini",
+          instructions: intermediateDecisionContext,
+          input:
+            originalInput +
+            "\n\n" +
+            group.map((p) => JSON.stringify(p)).join(""),
+        });
+        return res.output_text;
+      })
     );
 
-    hasNextPage =
-      nextData.props.pageProps.fetchResult.searchFast.paginatorInfo.hasMorePages;
-    nextPage =
-      "/pagina" +
-      (nextData.props.pageProps.fetchResult.searchFast.paginatorInfo
-        .currentPage + 1);
+    currentBatch = results.flatMap((output) => JSON.parse(output));
+  }
+
+  return currentBatch;
+}
+
+async function fetchPage(pageUrl: string) {
+  try {
+    const { data: html } = await axios.get(pageUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0)",
+      },
+    });
+    const $ = cheerio.load(html);
+    const rawJson = $("#__NEXT_DATA__").html();
+    if (!rawJson) return [];
+    const nextData = JSON.parse(rawJson);
+    return nextData.props.pageProps.fetchResult.searchFast.data.map(mapProperty);
+  } catch (err: any) {
+    console.error("Failed fetching:", pageUrl, err.message);
+    return [];
+  }
+}
+
+export async function scrapeAllProperties(url: string) {
+  // Primera request para conocer paginatorInfo
+  const { data: firstHtml } = await axios.get(url);
+  const $first = cheerio.load(firstHtml);
+
+  const rawJson = $first("#__NEXT_DATA__").html();
+  if (!rawJson) throw new Error("No __NEXT_DATA__ script found");
+
+  const firstData = JSON.parse(rawJson);
+  const paginatorInfo =
+    firstData.props.pageProps.fetchResult.searchFast.paginatorInfo;
+
+  const totalPages = paginatorInfo.lastPage;
+  console.log("Total pages to scrape:", totalPages);
+
+  const pageUrls = Array.from({ length: totalPages }, (_, i) =>
+    i === 0 ? url : `${url}/pagina${i + 1}`
+  );
+
+  // Ejecutar de a N páginas por vez
+  const CONCURRENCY = 50;
+  const properties: any[] = [];
+
+  for (let i = 0; i < pageUrls.length; i += CONCURRENCY) {
+    const chunk = pageUrls.slice(i, i + CONCURRENCY);
+
+    const batchResults = await Promise.all(chunk.map(fetchPage));
+    properties.push(...batchResults.flat());
   }
 
   console.log("Finished scraping. Total properties found:", properties.length);
+  console.log("Expected properties: " + paginatorInfo.total)
   return properties;
 }
-
 
 async function makeDecision(originalInput: string, properties: string) {
   const response = await client.responses.create({
@@ -112,17 +144,16 @@ async function makeDecision(originalInput: string, properties: string) {
 }
 
 /*async function main() {
-  const input = "Dame apartamentos en montevideo en venta con renta de menos de 100000 y mas de 80000 dolares de 1 dormitorio o mas en la blanqueada";
+  const input = "Dame apartamentos en montevideo en venta con renta de menos de 140000 y mas de 50000 dolares en reducto y aguada";
   const url = await generateLink(input);
   console.log("URL generado:", url);
 
-  const properties = await scrapeAllProperties(url, input);
-  console.log("Propiedades encontradas:", properties.length);
+  const properties = await scrapeAllProperties(url);
+  const intermediateRes = await intermediateDecisioning(properties, input);
 
-  const decision = await makeDecision(input, JSON.stringify(properties));
+  const decision = await makeDecision(input, JSON.stringify(intermediateRes));
   console.log(decision);
 }
-
 main();*/
 
 const app = express();
@@ -144,10 +175,9 @@ app.post("/api/getAdvice", async (req, res) => {
     console.log("User query:", message);
 
     const url = await generateLink(message);
-
-    const properties = await scrapeAllProperties(url, message);
-
-    const decision = await makeDecision(message, JSON.stringify(properties));
+    const properties = await scrapeAllProperties(url);
+    const intermediateRes = await intermediateDecisioning(properties, message);
+    const decision = await makeDecision(message, JSON.stringify(intermediateRes));
 
     res.json({ query: message, decision });
   } catch (err) {
