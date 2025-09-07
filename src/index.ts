@@ -6,6 +6,7 @@ import * as express from "express";
 import * as cors from "cors";
 import axios from "axios";
 import * as cheerio from "cheerio";
+import intermediateDecisionContext from "./prompts/intermediateDecisionContext";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -46,7 +47,7 @@ function mapProperty(raw: any) {
   };
 }
 
-export async function scrapeAllProperties(url: string) {
+export async function scrapeAllProperties(url: string, originalInput: string) {
   let hasNextPage = true;
   let properties: any[] = [];
   let nextPage = "";
@@ -65,7 +66,22 @@ export async function scrapeAllProperties(url: string) {
     const pageData =
       nextData.props.pageProps.fetchResult.searchFast.data.map(mapProperty);
 
-    properties = [...properties, ...pageData];
+    // Only happens if the first page has no results, thus no data
+    if (pageData.length === 0) {
+      return properties;
+    }
+
+    const response = await client.responses.create({
+      model: "gpt-4o-mini",
+      instructions: intermediateDecisionContext,
+      input: originalInput + "\n\n" + JSON.stringify(pageData)
+    });
+
+    const intermediateProperties = JSON.parse(response.output_text).map((propId: string) => {
+      return pageData.find((p: any) => p.id === propId);
+    });
+
+    properties = [...properties, ...intermediateProperties];
 
     console.log("Scraping page:", url + nextPage);
     console.log(
@@ -80,6 +96,7 @@ export async function scrapeAllProperties(url: string) {
         .currentPage + 1);
   }
 
+  console.log("Finished scraping. Total properties found:", properties.length);
   return properties;
 }
 
@@ -95,11 +112,11 @@ async function makeDecision(originalInput: string, properties: string) {
 }
 
 /*async function main() {
-  const input = "Dame apartamentos en reducto con renta de menos de 100000 dolares";
+  const input = "Dame apartamentos en montevideo en venta con renta de menos de 100000 y mas de 80000 dolares de 1 dormitorio o mas en la blanqueada";
   const url = await generateLink(input);
   console.log("URL generado:", url);
 
-  const properties = await scrapeAllProperties(url);
+  const properties = await scrapeAllProperties(url, input);
   console.log("Propiedades encontradas:", properties.length);
 
   const decision = await makeDecision(input, JSON.stringify(properties));
@@ -128,7 +145,7 @@ app.post("/api/getAdvice", async (req, res) => {
 
     const url = await generateLink(message);
 
-    const properties = await scrapeAllProperties(url);
+    const properties = await scrapeAllProperties(url, message);
 
     const decision = await makeDecision(message, JSON.stringify(properties));
 
