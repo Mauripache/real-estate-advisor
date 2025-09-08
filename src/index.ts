@@ -7,6 +7,7 @@ import * as cors from "cors";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import intermediateDecisionContext from "./prompts/intermediateDecisionContext";
+import { compressDescription } from "./helpers/compressDescription";
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -23,10 +24,14 @@ async function generateLink(description: string) {
 }
 
 function mapProperty(raw: any) {
+  // A property has more fields than this, this is a shortened version with the most important ones, can be expanded later
   return {
     id: raw.id,
     title: raw.title,
-    description: raw.description?.replace(/<br\s*\/?>/gi, "\n").trim(),
+    /*description: raw.description
+      ?.replace(/<br\s*\/?>|<\/?p>|[\r\n]+/gi, " ")
+      .trim(),*/
+    shortDescription: compressDescription(raw.description),
     link: "https://www.infocasas.com.uy" + raw.link,
     price_usd: raw.price_amount_usd,
     currency: raw.currency,
@@ -35,14 +40,10 @@ function mapProperty(raw: any) {
     m2Built: raw.m2Built || raw.m2apto || raw.m2,
     garage: raw.hasGarage || raw.garage > 0,
     propertyType: raw.property_type?.name,
-    operationType: raw.operation_type?.name,
     neighborhood: raw.locations?.neighbourhood?.[0]?.name || null,
     commonExpenses: raw.commonExpenses?.amount,
     constructionYear: raw.construction_year,
     images: raw.images?.map((img: any) => img.src || img.link || img) || [],
-    technicalSheet: Object.fromEntries(
-      (raw.technicalSheet || []).map((item: any) => [item.label, item.value])
-    ),
     facilities: raw.facilities || [],
   };
 }
@@ -56,25 +57,55 @@ async function intermediateDecisioning(properties: any[], originalInput: string)
 
   let currentBatch = properties;
 
+  function formatFacilities(fac: any[]) {
+    if (!fac || fac.length === 0) return "N/A";
+    return fac.map((fac) => fac.name).join(",");
+  }
+
   // reducimos hasta tener 50 o menos
   while (currentBatch.length > 50) {
     const chunks = chunk(currentBatch, 50);
 
     const results = await Promise.all(
       chunks.map(async (group) => {
+        const formatted = group
+          .map((p) => {
+            const fac = formatFacilities(p.facilities);
+            return [
+              `ID=${p.id}`,
+              `T=${p.title ?? "N/A"}`,
+              `P=${p.price_usd ?? "N/A"}`,
+              `C=${p.currency ?? "N/A"}`,
+              `B=${p.bedrooms ?? "N/A"}`,
+              `Ba=${p.bathrooms ?? "N/A"}`,
+              `m2=${p.m2Built ?? "N/A"}`,
+              `G=${p.garage ? 1 : 0}`,
+              `PT=${p.propertyType ?? "N/A"}`,
+              `N=${p.neighborhood ?? "N/A"}`,
+              `CE=${p.commonExpenses ?? "N/A"}`,
+              `CY=${p.constructionYear ?? "N/A"}`,
+              `F=${fac}`,
+              `D=${p.shortDescription}`
+            ].join(";");
+          })
+          .join("\n");
+
         const res = await client.responses.create({
           model: "gpt-4o-mini",
           instructions: intermediateDecisionContext,
-          input:
-            originalInput +
-            "\n\n" +
-            group.map((p) => JSON.stringify(p)).join(""),
+          input: `${originalInput}\n${formatted}`,
         });
-        return res.output_text;
+
+        console.log(res.usage);
+
+        return res.output_text; // ej: "123,456,789,101,102"
       })
     );
 
-    currentBatch = results.flatMap((output) => JSON.parse(output));
+    const selectedIds = results
+      .flatMap((output) => output.split(",").map((id) => id.trim()));
+
+    currentBatch = currentBatch.filter((p) => selectedIds.includes(String(p.id)));
   }
 
   return currentBatch;
@@ -144,7 +175,7 @@ async function makeDecision(originalInput: string, properties: string) {
 }
 
 /*async function main() {
-  const input = "Dame apartamentos en montevideo en venta con renta de menos de 140000 y mas de 50000 dolares en reducto y aguada";
+  const input = "Estoy buscando casas o apartamentos baratos en reducto, montevideo, que pienses que se puedan alquilar, puedo gastar unos 10000 dolares en reciclarlo, pero sin dudas busco que salgan menos de 80000 dolares";
   const url = await generateLink(input);
   console.log("URL generado:", url);
 
